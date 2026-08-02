@@ -1,0 +1,55 @@
+G04 ================================================== *
+G04 Macro Definition: Parameterized 3-Spoke (Segment)  *
+G04                   Thermal Relief Pad               *
+G04 Variables:                                         *
+G04   $1 = Diameter                                    *
+G04   $2 = Total Air Gap (e.g. start with 2mm)         *
+G04   $3 = Spoke Angle Offset (started with 0°)        *
+G04 Parameters: D=2.00mm, TotalGap=2mm, Offset=0       *
+G04 ================================================== *
+%AMTHM_3SEG*
+$4=$2/3*
+$5=$1-0.01*
+$3=$3+0*
+1,1,$1,0,0*
+1,0,$5,0,0*
+20,0,$4,0,0,0,$5,$3+1X360/3*
+20,0,$4,0,0,0,$5,$3+2X360/3*
+20,0,$4,0,0,0,$5,$3+3X360/3*%
+G04 ================================================== *
+G04 Macro Definition: Parameterized 4-Spoke (Segment)  *
+G04                   Thermal Relief Pad               *
+G04 Variables:                                         *
+G04   $1 = Diameter                                    *
+G04   $2 = Total Air Gap (e.g. start with 2mm)         *
+G04   $3 = Spoke Angle Offset (started with 45°)       *
+G04 Parameters: D=2.00mm, TotalGap=2mm, Offset=0       *
+G04 ================================================== *
+%AMTHM_4SEG*
+$4=$2/3*
+$5=$1-0.01*
+$3=$3+45*
+1,1,$1,0,0*
+1,0,$5,0,0*
+20,0,$4,0,0,0,$5,$3+1X360/4*
+20,0,$4,0,0,0,$5,$3+2X360/4*
+20,0,$4,0,0,0,$5,$3+3X360/4*
+20,0,$4,0,0,0,$5,$3+4X360/4*%
+G04 ================================================== *
+G04 Macro Definition: Parameterized Corner-Gapped Pad  *
+G04 Variables:                                         *
+G04 $1 = Outer Width                                   *
+G04 $2 = Outer Height                                  *
+G04 $3 = Diagonal Air Gap (e.g. start with 0.5mm)      *
+G04 ================================================== *
+%AMTHM_RECT*
+$4=$3X0.707107*
+$5=$1X0.5*
+$6=$2X0.5*
+$7=$5-$4*
+$8=$6-$4*
+20,1,0.01,-$7,$6,$7,$6,0*
+20,1,0.01,-$7,-$6,$7,-$6,0*
+20,1,0.01,-$5,-$8,-$5,$8,0*
+20,1,0.01,$5,-$8,$5,$8,0*%
+G04 ================================================== *

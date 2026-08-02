@@ -1,0 +1,4 @@
+git+https://github.com/Argmaster/pygerber
+gerbonara
+gerber_writer
+cairosvg
