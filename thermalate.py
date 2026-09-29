@@ -27,7 +27,7 @@ import math
 
 try:
     from gerbonara.apertures import ApertureMacroInstance, CircleAperture, ObroundAperture, RectangleAperture
-    from gerbonara.graphic_objects import Flash
+    from gerbonara.graphic_objects import Flash, Line, Arc
     from gerbonara.rs274x import GerberFile
 except Exception as exc:
     raise SystemExit(
@@ -332,6 +332,9 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     orig_stats_html = f"<p>Total pads: {orig_stats['total']}<br/>GND pads: {orig_stats['gnd']}</p>" + breakdown_html(orig_stats['breakdown'])
     rew_stats_html = f"<p>Total pads: {rew_stats['total']}<br/>GND pads: {rew_stats['gnd']}</p>" + breakdown_html(rew_stats['breakdown'])
 
+    # embed rewritten SVG content as hidden data for the Three.js viewer
+    safe_rewritten_svg = rewritten_svg.replace('</script>', '<\\/script>')
+
     parts = []
     parts.append('<!DOCTYPE html>')
     parts.append('<html lang="en">')
@@ -345,35 +348,25 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     parts.append('    .pane h2 { margin: 4px 8px; font-size: 0.95rem; }')
     parts.append('    .svg-container { width: 100%; min-height: 320px; overflow: auto; border: 1px dashed #ddd; position: relative; background: #fff; display: flex; align-items: center; justify-content: center; }')
     parts.append('    .svg-container svg, .svg-container img { width: 100%; height: auto; display: block; }')
-    parts.append('    .overlay-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: none; pointer-events: none; }')
-    parts.append('    .overlay-svg svg { position: relative; z-index: 1; }')
-    parts.append(f'    .overlay-svg .tint {{ position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: {tint_css}; pointer-events: none; mix-blend-mode: multiply; z-index: 2; }}')
     parts.append('    .info { padding: 8px; font-size: 0.85rem; color: #333; border-top: 1px solid #eee; margin-top: 8px; }')
     parts.append('    .controls { text-align: center; padding: 8px; }')
-    parts.append('    .compare-btn, .reset-3d-btn { display: inline-block; margin: 0 8px; padding: 8px 12px; background: #1976d2; color: white; border-radius: 6px; cursor: pointer; user-select: none; }')
-    parts.append('    .compare-btn.locked { background: #004ba0; }')
-    parts.append('    .three-d-container { perspective: 1200px; touch-action: none; overflow: hidden; }')
-    parts.append('    .three-d-image { transform-origin: center center; transform: perspective(1200px) rotateX(20deg) rotateY(-20deg); transition: transform 0.15s ease; cursor: grab; user-select: none; -webkit-user-drag: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; touch-action: none; }')
-    parts.append('    .three-d-image:active { cursor: grabbing; }')
-    parts.append('    .divider { height: 100%; width: 1px; background: #eee; }')
+    parts.append('    .compare-btn { display: inline-block; margin: 0 8px; padding: 8px 12px; background: #1976d2; color: white; border-radius: 6px; cursor: pointer; user-select: none; }')
+    parts.append('    .three-d-canvas { width: 100%; height: 480px; display: block; touch-action: none; -webkit-user-select: none; user-select: none; cursor: grab; }')
     parts.append('  </style>')
+    # include three.js and SVGLoader + OrbitControls from CDN as ES modules
     parts.append('</head>')
     parts.append('<body>')
+
     parts.append('  <div class="controls">')
     parts.append('    <span id="compareBtn" class="compare-btn">Visual Compare</span>')
-    if preview_3d_src:
-        parts.append('    <span id="reset3dBtn" class="reset-3d-btn">Reset 3D View</span>')
     parts.append('  </div>')
+
     parts.append('  <div class="wrap">')
 
     parts.append('    <div class="pane" id="leftPane">')
     parts.append('      <h2>Original Gerber</h2>')
     parts.append('      <div class="svg-container" id="leftContainer">')
     parts.append(original_svg)
-    parts.append('        <div id="leftOverlay" class="overlay-svg">')
-    parts.append(rewritten_svg)
-    parts.append('          <div class="tint"></div>')
-    parts.append('        </div>')
     parts.append('      </div>')
     parts.append('      <div class="info">' + orig_stats_html + '</div>')
     parts.append('    </div>')
@@ -386,47 +379,143 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     parts.append('      <div class="info">' + rew_stats_html + '</div>')
     parts.append('    </div>')
 
-    if preview_3d_src:
-        parts.append('    <div class="pane" id="threeDPane">')
-        parts.append('      <h2>3D Preview</h2>')
-        parts.append('      <div class="svg-container three-d-container" id="threeDContainer">')
-        parts.append(f'        <img id="preview3dImage" class="three-d-image" src="{preview_3d_src}" alt="3D Preview">')
-        parts.append('      </div>')
-        parts.append('      <div class="info">Drag the 3D preview to adjust its angle.</div>')
-        parts.append('    </div>')
+    # 3D pane
+    parts.append('    <div class="pane" id="threeDPane">')
+    parts.append('      <h2>Interactive 3D Preview</h2>')
+    parts.append('      <canvas id="threeCanvas" class="three-d-canvas"></canvas>')
+    parts.append('      <div class="info">Use mouse/touch to rotate and zoom. Copper is extruded; board outline is used for the PCB shape.</div>')
+    parts.append('    </div>')
 
     parts.append('  </div>')
 
+    # Hidden container with the rewritten SVG for the client-side loader
+    parts.append(f'  <div id="svgData" style="display:none;">{safe_rewritten_svg}</div>')
+
+    # Use local vendored ES module and helpers (for file:// compatibility)
+    # Inline vendored UMD builds for Chrome file:// compatibility
+    try:
+        three_umd = pathlib.Path('scripts/three.umd.min.js').read_text(encoding='utf-8')
+    except Exception:
+        three_umd = None
+    try:
+        orbit_umd = pathlib.Path('scripts/OrbitControls.umd.js').read_text(encoding='utf-8')
+    except Exception:
+        orbit_umd = None
+    try:
+        svgloader_umd = pathlib.Path('scripts/SVGLoader.umd.js').read_text(encoding='utf-8')
+    except Exception:
+        svgloader_umd = None
+
+    if three_umd:
+        parts.append('  <script>')
+        parts.append(three_umd)
+        parts.append('  </script>')
+    else:
+        parts.append('  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>')
+
+    if orbit_umd:
+        parts.append('  <script>')
+        parts.append(orbit_umd)
+        parts.append('  </script>')
+    else:
+        parts.append('  <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>')
+
+    if svgloader_umd:
+        parts.append('  <script>')
+        parts.append(svgloader_umd)
+        parts.append('  </script>')
+    else:
+        parts.append('  <script src="https://unpkg.com/three@0.160.0/examples/js/loaders/SVGLoader.js"></script>')
+
     parts.append('  <script>')
-    parts.append('    const btn = document.getElementById("compareBtn");')
-    parts.append('    const leftOverlay = document.getElementById("leftOverlay");')
-    parts.append('    const leftContainer = document.getElementById("leftContainer");')
-    parts.append('    const preview3dImage = document.getElementById("preview3dImage");')
-    parts.append('    const reset3dBtn = document.getElementById("reset3dBtn");')
-    parts.append('    let locked = false;')
-    parts.append('    let dragStart = null;')
-    parts.append('    let currentX = -20;')
-    parts.append('    let currentY = 20;')
-    parts.append('    let zoom = 1.0;')
-    parts.append('    function showOverlay(){ leftOverlay.style.display = "block"; const svgs = leftContainer.querySelectorAll("svg"); if(svgs[0]) { svgs[0].style.opacity = "0"; svgs[0].style.visibility = "hidden"; } }')
-    parts.append('    function hideOverlay(){ leftOverlay.style.display = "none"; const svgs = leftContainer.querySelectorAll("svg"); if(svgs[0]) { svgs[0].style.opacity = "1"; svgs[0].style.visibility = "visible"; } }')
-    parts.append('    function update3DTransform(){ if(!preview3dImage) return; preview3dImage.style.transform = `perspective(1200px) scale(${zoom}) rotateX(${currentY}deg) rotateY(${currentX}deg)`; }')
-    parts.append('    function reset3DView(){ currentX = -20; currentY = 20; zoom = 1.0; update3DTransform(); }')
-    parts.append('    if(btn){ btn.addEventListener("mousedown", (e)=>{ if(!locked) showOverlay(); });')
-    parts.append('    window.addEventListener("mouseup", (e)=>{ if(!locked) hideOverlay(); if(dragStart) { dragStart = null; } });')
-    parts.append('    btn.addEventListener("click", (e)=>{ locked = !locked; if(locked){ showOverlay(); btn.classList.add("locked"); } else { hideOverlay(); btn.classList.remove("locked"); } });')
-    parts.append('    btn.addEventListener("touchstart", (e)=>{ if(!locked) showOverlay(); });')
-    parts.append('    btn.addEventListener("touchend", (e)=>{ if(!locked) hideOverlay(); });')
-    parts.append('    }')
-    parts.append('    if(preview3dImage){ preview3dImage.addEventListener("pointerdown", (event)=>{ dragStart = { x: event.clientX, y: event.clientY, x0: currentX, y0: currentY }; preview3dImage.setPointerCapture(event.pointerId); });')
-    parts.append('    preview3dImage.addEventListener("pointermove", (event)=>{ if(!dragStart) return; const dx = event.clientX - dragStart.x; const dy = event.clientY - dragStart.y; currentX = dragStart.x0 + dx * 0.2; currentY = Math.min(60, Math.max(-60, dragStart.y0 - dy * 0.2)); update3DTransform(); });')
-    parts.append('    preview3dImage.addEventListener("pointerup", (event)=>{ dragStart = null; preview3dImage.releasePointerCapture(event.pointerId); });')
-    parts.append('    preview3dImage.addEventListener("pointercancel", ()=>{ dragStart = null; });')
-    parts.append('    preview3dImage.addEventListener("wheel", (event)=>{ if(!preview3dImage) return; event.preventDefault(); zoom = Math.min(2.0, Math.max(0.4, zoom - event.deltaY * 0.001)); update3DTransform(); });')
-    parts.append('    }')
-    parts.append('    if(reset3dBtn){ reset3dBtn.addEventListener("click", reset3DView); }')
-    parts.append('    window.addEventListener("resize", ()=>{ if(preview3dImage){ update3DTransform(); } });')
-    parts.append('    reset3DView();')
+    parts.append('    (function(){')
+    parts.append('      const svgText = document.getElementById("svgData").textContent || document.getElementById("svgData").innerText;')
+    parts.append('      const parser = new DOMParser();')
+    parts.append('      const doc = parser.parseFromString(svgText, "image/svg+xml");')
+    parts.append('      const allPaths = Array.from(doc.querySelectorAll("path, rect, circle, ellipse, polygon, polyline"));')
+    parts.append('      const copperElements = allPaths.filter(el => {')
+    parts.append('        const fill = el.getAttribute("fill") || (el.style && el.style.fill) || null;')
+    parts.append('        const stroke = el.getAttribute("stroke") || (el.style && el.style.stroke) || null;')
+    parts.append('        function isBlackColor(v){ if(!v) return false; const s = String(v).trim().toLowerCase(); return s.indexOf("#000") === 0 || s.indexOf("black") === 0; }')
+    parts.append('        return isBlackColor(fill) || isBlackColor(stroke) || (!fill && !stroke);')
+    parts.append('      });')
+    parts.append('      let boardPath = null;')
+    parts.append('      try {')
+    parts.append('        const profileCand = doc.querySelector("path[id*=Profile], path[class*=Profile], path[fill=none]");')
+    parts.append('        boardPath = profileCand || doc.querySelector("path");')
+    parts.append('      } catch (e) {')
+    parts.append('        boardPath = doc.querySelector("path");')
+    parts.append('      }')
+    parts.append('      const canvas = document.getElementById("threeCanvas");')
+    parts.append('      const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });')
+    parts.append('    renderer.setPixelRatio(window.devicePixelRatio || 1);')
+    parts.append('      const scene = new THREE.Scene();')
+    parts.append('      const camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1, 10000);')
+    parts.append('      camera.position.set(0, -200, 300);')
+    parts.append('      const controls = new THREE.OrbitControls(camera, renderer.domElement);')
+    parts.append('      controls.enablePan = true; controls.enableDamping = true; controls.dampingFactor = 0.1;')
+    parts.append('      const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8); scene.add(hemi);')
+    parts.append('      const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(0, 200, 200); scene.add(dir);')
+    parts.append('      const loader = new THREE.SVGLoader();')
+    parts.append('      function addShapesFromPaths(elements, material, depthMm){')
+    parts.append('        elements.forEach(el => {')
+    parts.append('          try {')
+    parts.append('            const data = loader.parse(el.outerHTML);')
+    parts.append('            data.paths.forEach(p => {')
+    parts.append('              const shapes = p.toShapes(true);')
+    parts.append('              shapes.forEach(s => {')
+    parts.append('                const geom = new THREE.ExtrudeGeometry(s, { depth: depthMm, bevelEnabled: false });')
+    parts.append('                const mesh = new THREE.Mesh(geom, material);')
+    parts.append('                geom.computeBoundingBox();')
+    parts.append('                const bb = geom.boundingBox;')
+    parts.append('                const cx = (bb.max.x + bb.min.x) / 2; const cy = (bb.max.y + bb.min.y) / 2;')
+    parts.append('                mesh.position.x -= cx; mesh.position.y -= cy;')
+    parts.append('                scene.add(mesh);')
+    parts.append('              });')
+    parts.append('            });')
+    parts.append('          } catch (e) { console.warn("SVG parse err", e); }')
+    parts.append('        });')
+    parts.append('      }')
+    parts.append('      const copperMat = new THREE.MeshPhongMaterial({ color: 0xb87333, specular: 0x444444, shininess: 30 });')
+    parts.append('      const boardMat = new THREE.MeshPhongMaterial({ color: 0x113322, side: THREE.DoubleSide });')
+    parts.append('      const copperDepth = 0.035;')
+    parts.append('      addShapesFromPaths(copperElements, copperMat, copperDepth);')
+    parts.append('      if (boardPath) {')
+    parts.append('        try {')
+    parts.append('          const data = loader.parse(boardPath.outerHTML);')
+    parts.append('          data.paths.forEach(p => {')
+    parts.append('            const shapes = p.toShapes(true);')
+    parts.append('            shapes.forEach(s => {')
+    parts.append('              const geom = new THREE.ExtrudeGeometry(s, { depth: 1.6, bevelEnabled: false });')
+    parts.append('              const mesh = new THREE.Mesh(geom, boardMat);')
+    parts.append('              geom.computeBoundingBox();')
+    parts.append('              const bb = geom.boundingBox;')
+    parts.append('              const cx = (bb.max.x + bb.min.x) / 2; const cy = (bb.max.y + bb.min.y) / 2;')
+    parts.append('              mesh.position.x -= cx; mesh.position.y -= cy;')
+    parts.append('              scene.add(mesh);')
+    parts.append('            });')
+    parts.append('          });')
+    parts.append('        } catch (e) { console.warn("board parse err", e); }')
+    parts.append('      }')
+    parts.append('      function fitCamera(){')
+    parts.append('        const box = new THREE.Box3().setFromObject(scene);')
+    parts.append('        const size = box.getSize(new THREE.Vector3());')
+    parts.append('        const center = box.getCenter(new THREE.Vector3());')
+    parts.append('        const maxDim = Math.max(size.x, size.y, size.z);')
+    parts.append('        const fov = camera.fov * (Math.PI / 180);')
+    parts.append('        const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));')
+    parts.append('        camera.position.set(center.x, center.y - cameraZ * 0.1, cameraZ * 1.2);')
+    parts.append('        camera.lookAt(center);')
+    parts.append('        controls.target.copy(center);')
+    parts.append('      }')
+    parts.append('      function onWindowResize(){')
+    parts.append('        const w = canvas.clientWidth || 640; const h = canvas.clientHeight || 480;')
+    parts.append('        camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h, false);')
+    parts.append('      }')
+    parts.append('      window.addEventListener("resize", onWindowResize);')
+    parts.append('      function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }')
+    parts.append('      onWindowResize(); fitCamera(); animate();')
+    parts.append('    })();')
     parts.append('  </script>')
 
     parts.append('</body>')
@@ -562,7 +651,69 @@ def _replace_black_in_svg(svg_text: str, fg_color: Optional[str]) -> str:
     return new
 
 
-def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: str, tint_color: str, pcb_w_mm: Optional[float], pcb_h_mm: Optional[float], corner_radius_mm: Optional[float]):
+def _sample_arc_points(arc_obj: Arc, segments: int = 20) -> List[Tuple[float, float]]:
+    # gerbonara Arc may provide a 'center' attribute (absolute coords) or cx/cy which can be offsets.
+    center = getattr(arc_obj, 'center', None)
+    if center is None:
+        cx = getattr(arc_obj, 'cx', 0.0)
+        cy = getattr(arc_obj, 'cy', 0.0)
+    else:
+        cx, cy = center
+
+    radius = math.hypot(arc_obj.x1 - cx, arc_obj.y1 - cy)
+    start_angle = math.atan2(arc_obj.y1 - cy, arc_obj.x1 - cx)
+    end_angle = math.atan2(arc_obj.y2 - cy, arc_obj.x2 - cx)
+    delta = end_angle - start_angle
+    if arc_obj.clockwise:
+        if delta >= 0:
+            delta -= 2 * math.pi
+    else:
+        if delta <= 0:
+            delta += 2 * math.pi
+    num_steps = max(4, int(math.ceil(abs(delta) / (math.pi / 16))))
+    points = []
+    for step in range(num_steps + 1):
+        angle = start_angle + delta * (step / num_steps)
+        x = cx + math.cos(angle) * radius
+        y = cy + math.sin(angle) * radius
+        points.append((x, y))
+    return points
+
+
+def _build_edgecuts_outline(edgecuts_path: pathlib.Path) -> Optional[Tuple[List[Tuple[float, float]], Tuple[float, float, float, float]]]:
+    try:
+        raw_text = edgecuts_path.read_text(encoding='utf-8', errors='replace')
+        edge_gerber = GerberFile.from_string(raw_text, enable_include_dir=None)
+    except Exception:
+        return None
+
+    points: List[Tuple[float, float]] = []
+    for idx, obj in enumerate(edge_gerber.objects):
+        if idx == 0:
+            points.append((obj.x1, obj.y1))
+        if isinstance(obj, Line):
+            points.append((obj.x2, obj.y2))
+        elif isinstance(obj, Arc):
+            arc_points = _sample_arc_points(obj)
+            if arc_points:
+                if points and abs(points[-1][0] - arc_points[0][0]) < 1e-6 and abs(points[-1][1] - arc_points[0][1]) < 1e-6:
+                    arc_points = arc_points[1:]
+                points.extend(arc_points)
+        else:
+            continue
+
+    if not points:
+        return None
+    if abs(points[0][0] - points[-1][0]) > 1e-6 or abs(points[0][1] - points[-1][1]) > 1e-6:
+        points.append(points[0])
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    bbox = (min(xs), min(ys), max(xs), max(ys))
+    return points, bbox
+
+
+def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: str, tint_color: str, pcb_w_mm: Optional[float], pcb_h_mm: Optional[float], corner_radius_mm: Optional[float], gerber_path: Optional[pathlib.Path] = None):
     """Render a simple 3D-like PNG from an SVG.
 
     This function creates a PCB-like image by recoloring black areas to fg_color (copper),
@@ -582,14 +733,103 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
         return img.width / 3.78, img.height / 3.78
 
     svg_w_mm, svg_h_mm = extract_mm_size(svg_markup)
+    # initial estimate of px/mm from the rendered SVG
+    px_per_mm_est = img.width / svg_w_mm if svg_w_mm > 0 else img.width / 25.4
+
+    # parse the SVG viewBox for coordinate mapping
+    vb_match = re.search(r'viewBox="([\d\.\-\s]+)"', svg_markup)
+    if vb_match:
+        vb_vals = [float(v) for v in vb_match.group(1).split()]
+        if len(vb_vals) == 4:
+            vb_minx, vb_miny, vb_w, vb_h = vb_vals
+        else:
+            vb_minx, vb_miny, vb_w, vb_h = 0.0, 0.0, img.width, img.height
+    else:
+        vb_minx, vb_miny, vb_w, vb_h = 0.0, 0.0, img.width, img.height
+
+    edgecuts_path = pathlib.Path('edgecuts.gbr')
+    edge_outline = _build_edgecuts_outline(edgecuts_path) if edgecuts_path.exists() else None
+    if edge_outline:
+        edge_points, edge_bbox = edge_outline
+        edge_minx, edge_miny, edge_maxx, edge_maxy = edge_bbox
+        edge_board_w_mm = edge_maxx - edge_minx
+        edge_board_h_mm = edge_maxy - edge_miny
+    else:
+        edge_minx = vb_minx
+        edge_miny = vb_miny
+        edge_board_w_mm = None
+        edge_board_h_mm = None
+
     if pcb_w_mm is None:
-        pcb_w_mm = svg_w_mm + 20.0
+        pcb_w_mm = edge_board_w_mm if edge_board_w_mm is not None else svg_w_mm + 20.0
+    else:
+        if edge_board_w_mm is not None:
+            pcb_w_mm = max(pcb_w_mm, edge_board_w_mm)
     if pcb_h_mm is None:
-        pcb_h_mm = svg_h_mm + 20.0
+        pcb_h_mm = edge_board_h_mm if edge_board_h_mm is not None else svg_h_mm + 20.0
+    else:
+        if edge_board_h_mm is not None:
+            pcb_h_mm = max(pcb_h_mm, edge_board_h_mm)
+
+    # choose a common origin for board coordinate mapping: use the minimum of the SVG viewBox origin
+    # and the edge-cuts origin so both copper and edge polygons map into the same coordinate space.
+    if edge_board_w_mm is not None:
+        global_minx = min(vb_minx, edge_minx)
+        global_miny = min(vb_miny, edge_miny)
+    else:
+        global_minx = vb_minx
+        global_miny = vb_miny
+    board_origin_x = global_minx
+    board_origin_y = global_miny
+
+    # derive a copper mask from the rendered SVG so we can size/position the board
+    alpha = img.split()[3]
+    gray = img.convert('L')
+    copper_mask = gray.point(lambda p: 255 if p < 240 else 0)
+    copper_mask = ImageChops.multiply(copper_mask, alpha)
+    bbox = copper_mask.getbbox()
+
+    # Auto-expand board to include copper extents if needed
+    expand_margin_mm = 10.0
+    rotated_for_fit = False
+    if bbox:
+        left, upper, right, lower = bbox
+        copper_w_px = right - left
+        copper_h_px = lower - upper
+        copper_w_mm = copper_w_px / px_per_mm_est
+        copper_h_mm = copper_h_px / px_per_mm_est
+
+        # if copper doesn't fit but a 90° rotation would fit better, rotate the raster
+        def fits(w_mm, h_mm, board_w, board_h):
+            return (w_mm <= board_w - expand_margin_mm and h_mm <= board_h - expand_margin_mm)
+
+        if not fits(copper_w_mm, copper_h_mm, pcb_w_mm, pcb_h_mm):
+            # try rotated dimensions
+            if fits(copper_h_mm, copper_w_mm, pcb_w_mm, pcb_h_mm):
+                # rotate the rendered raster and associated masks by 90 degrees
+                img = img.rotate(90, expand=True)
+                copper_mask = copper_mask.rotate(90, expand=True)
+                # copper_layer needs to be recreated to match new mask size below
+                # signal rotation so viewBox width/height can be swapped later
+                rotated_for_fit = True
+                # recompute pixel/mm estimate after rotation
+                px_per_mm_est = img.width / svg_w_mm if svg_w_mm > 0 else img.width / 25.4
+                # recompute copper pixel dims after rotation
+                left, upper, right, lower = copper_mask.getbbox()
+                copper_w_px = right - left
+                copper_h_px = lower - upper
+                copper_w_mm = copper_w_px / px_per_mm_est
+                copper_h_mm = copper_h_px / px_per_mm_est
+
+        if copper_w_mm > pcb_w_mm - expand_margin_mm:
+            pcb_w_mm = copper_w_mm + expand_margin_mm
+        if copper_h_mm > pcb_h_mm - expand_margin_mm:
+            pcb_h_mm = copper_h_mm + expand_margin_mm
+
     if corner_radius_mm is None:
         corner_radius_mm = 0.1 * max(pcb_w_mm, pcb_h_mm)
 
-    px_per_mm = img.width / svg_w_mm if svg_w_mm > 0 else img.width / 25.4
+    px_per_mm = px_per_mm_est
     board_w_px = int(round(pcb_w_mm * px_per_mm))
     board_h_px = int(round(pcb_h_mm * px_per_mm))
     corner_px = int(round(corner_radius_mm * px_per_mm))
@@ -601,9 +841,26 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
 
     from PIL import ImageDraw
 
-    mask = Image.new('L', (board_w_px, board_h_px), 0)
-    md = ImageDraw.Draw(mask)
-    md.rounded_rectangle([0, 0, board_w_px, board_h_px], radius=corner_px, fill=255)
+    mask = None
+    edgecuts_path = pathlib.Path('edgecuts.gbr')
+    if edgecuts_path.exists():
+        edge_outline = _build_edgecuts_outline(edgecuts_path)
+        if edge_outline:
+            edge_points, edge_bbox = edge_outline
+            mask = Image.new('L', (board_w_px, board_h_px), 0)
+            md = ImageDraw.Draw(mask)
+            board_points = [
+                (
+                    int(round((x - board_origin_x) * px_per_mm)),
+                    int(round((y - board_origin_y) * px_per_mm)),
+                )
+                for x, y in edge_points
+            ]
+            md.polygon(board_points, fill=255)
+    if mask is None:
+        mask = Image.new('L', (board_w_px, board_h_px), 0)
+        md = ImageDraw.Draw(mask)
+        md.rounded_rectangle([0, 0, board_w_px, board_h_px], radius=corner_px, fill=255)
 
     board_top = Image.new('RGBA', (board_w_px, board_h_px), board_color + (255,))
     board_top.putalpha(mask)
@@ -611,12 +868,11 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
     # thickness: 1.6mm (user requested)
     thickness_px = max(1, int(round(px_per_mm * 1.6)))
 
-    # create side plane with rounded ends matching board rounding
+    # create side plane with rounded ends matching board rounding — will be omitted from final composite per user request
     side_plane = Image.new('RGBA', (board_w_px, thickness_px), (0, 0, 0, 0))
     sd = ImageDraw.Draw(side_plane)
-    # rounded ends for the side plane
     sd.rounded_rectangle([0, 0, board_w_px, thickness_px], radius=max(1, corner_px // 2), fill=side_color + (255,))
-    # apply vertical alpha gradient to side plane
+    # side plane alpha (kept for potential use) but we will not paste the side or shadow into the final image
     side_alpha = Image.new('L', (board_w_px, thickness_px), 0)
     sad = ImageDraw.Draw(side_alpha)
     sad.rounded_rectangle([0, 0, board_w_px, thickness_px], radius=max(1, corner_px // 2), fill=255)
@@ -639,31 +895,149 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
         except Exception:
             return None
 
-    # derive a copper mask and layer from the original SVG render, matching drawn pixels and alpha
-    alpha = img.split()[3]
-    gray = img.convert('L')
-    copper_mask = gray.point(lambda p: 255 if p < 240 else 0)
-    copper_mask = ImageChops.multiply(copper_mask, alpha)
-
+    # build copper layer — prefer a vector-based rendering from the Gerber when available
     fg_rgb = ImageColor.getrgb(fg_color) if fg_color else (184, 115, 51)
-    copper_fill = Image.new('RGBA', img.size, fg_rgb + (255,))
-    copper_fill.putalpha(copper_mask)
+    copper_layer = None
+    vector_copper_used = False
+    if gerber_path is not None and pathlib.Path(gerber_path).exists():
+        try:
+            gtext = pathlib.Path(gerber_path).read_text(encoding='utf-8', errors='replace')
+            gfile = GerberFile.from_string(gtext, enable_include_dir=None)
+            # draw vector copper directly in board pixel coordinates
+            copper_img = Image.new('RGBA', (board_w_px, board_h_px), (0, 0, 0, 0))
+            from PIL import ImageDraw
+            cdraw = ImageDraw.Draw(copper_img)
+            from gerbonara.graphic_objects import Flash, Line, Arc
+            for obj in gfile.objects:
+                # Flash objects -> pads
+                if isinstance(obj, Flash):
+                    aper = getattr(obj, 'aperture', None)
+                    x_mm = getattr(obj, 'x', None)
+                    y_mm = getattr(obj, 'y', None)
+                    # some Flash objects use center
+                    if x_mm is None or y_mm is None:
+                        center = getattr(obj, 'center', None)
+                        if center:
+                            x_mm, y_mm = center
+                    if x_mm is None or y_mm is None:
+                        continue
+                    x_px = int(round((x_mm - board_origin_x) * px_per_mm))
+                    y_px = int(round((y_mm - board_origin_y) * px_per_mm))
+                    if isinstance(aper, CircleAperture):
+                        d_mm = getattr(aper, 'diameter', None)
+                        if d_mm:
+                            r_px = max(1, int(round((d_mm / 2.0) * px_per_mm)))
+                            bbox_xy = [x_px - r_px, y_px - r_px, x_px + r_px, y_px + r_px]
+                            cdraw.ellipse(bbox_xy, fill=fg_rgb + (255,))
+                    elif isinstance(aper, RectangleAperture):
+                        w_mm = getattr(aper, 'w', None) or getattr(aper, 'width', None)
+                        h_mm = getattr(aper, 'h', None) or getattr(aper, 'height', None)
+                        if w_mm and h_mm:
+                            hw = int(round((w_mm / 2.0) * px_per_mm))
+                            hh = int(round((h_mm / 2.0) * px_per_mm))
+                            bbox_xy = [x_px - hw, y_px - hh, x_px + hw, y_px + hh]
+                            cdraw.rectangle(bbox_xy, fill=fg_rgb + (255,))
+                    elif isinstance(aper, ObroundAperture):
+                        w_mm = getattr(aper, 'w', None)
+                        h_mm = getattr(aper, 'h', None)
+                        if w_mm and h_mm:
+                            hw = int(round((w_mm / 2.0) * px_per_mm))
+                            hh = int(round((h_mm / 2.0) * px_per_mm))
+                            radius_px = max(1, min(hw, hh))
+                            cdraw.rounded_rectangle([x_px - hw, y_px - hh, x_px + hw, y_px + hh], radius=radius_px, fill=fg_rgb + (255,))
+                # Draw traces (lines and arcs) as stroked paths using aperture diameter
+                if isinstance(obj, Line):
+                    x1_px = int(round((obj.x1 - board_origin_x) * px_per_mm))
+                    y1_px = int(round((obj.y1 - board_origin_y) * px_per_mm))
+                    x2_px = int(round((obj.x2 - board_origin_x) * px_per_mm))
+                    y2_px = int(round((obj.y2 - board_origin_y) * px_per_mm))
+                    ap = getattr(obj, 'aperture', None)
+                    # aperture.diameter is in mm; default stroke width is 0.2 mm
+                    stroke_mm = getattr(ap, 'diameter', None) if ap is not None else 0.2
+                    stroke_px = max(1, int(round(stroke_mm * px_per_mm)))
+                    cdraw.line([x1_px, y1_px, x2_px, y2_px], fill=fg_rgb + (255,), width=stroke_px)
+                if isinstance(obj, Arc):
+                    pts = _sample_arc_points(obj)
+                    if pts and len(pts) > 1:
+                        px_pts = [(int(round((x - board_origin_x) * px_per_mm)), int(round((y - board_origin_y) * px_per_mm))) for x, y in pts]
+                        ap = getattr(obj, 'aperture', None)
+                        stroke_mm = getattr(ap, 'diameter', None) if ap is not None else 0.2
+                        stroke_px = max(1, int(round(stroke_mm * px_per_mm)))
+                        cdraw.line(px_pts, fill=fg_rgb + (255,), width=stroke_px)
+            # use raw copper_img as the copper layer (no glow)
+            copper_layer = copper_img
+            vector_copper_used = True
+        except Exception:
+            copper_layer = None
+    # fallback: raster-driven copper (legacy path)
+    if copper_layer is None:
+        # if we rotated earlier, re-create copper_fill/glow to match img/copper_mask sizes
+        copper_fill = Image.new('RGBA', img.size, fg_rgb + (255,))
+        copper_fill.putalpha(copper_mask)
+        # small dilation to help preserve thin pads/traces after transformations
+        dilation_px = max(1, int(round(px_per_mm * 0.05)))
+        try:
+            copper_mask = copper_mask.filter(ImageFilter.MaxFilter(3)) if dilation_px >= 1 else copper_mask
+        except Exception:
+            pass
+        # no glow: use a crisp copper fill from the raster mask
+        copper_layer = copper_fill
+    # if we rotated the raster to fit, swap the viewBox width/height so unit mapping remains correct
+    if 'rotated_for_fit' in locals() and rotated_for_fit:
+        vb_w, vb_h = vb_h, vb_w
 
-    glow = copper_mask.filter(ImageFilter.GaussianBlur(radius=max(1, px_per_mm * 0.5)))
-    glow_color = tuple(min(255, int(c * 1.4)) for c in fg_rgb)
-    copper_glow = Image.new('RGBA', img.size, glow_color + (90,))
-    copper_glow.putalpha(glow)
-    copper_layer = Image.alpha_composite(copper_fill, copper_glow)
+    if vector_copper_used and copper_layer is not None:
+        # copper_layer is already rendered in board pixel coordinates (board_w_px x board_h_px)
+        composite_top = board_top.copy()
+        composite_top.paste(copper_layer, (0, 0), copper_layer)
+    else:
+        # crop copper to its bbox in pixel space to avoid processing empty areas
+        bbox = copper_mask.getbbox()
+        if bbox:
+            left_px, upper_px, right_px, lower_px = bbox
+            copper_crop = copper_layer.crop(bbox)
+            copper_w_px = right_px - left_px
+            copper_h_px = lower_px - upper_px
 
-    # place copper on board top — scale to fit within the board while preserving aspect and center it
-    scale = min(board_w_px / max(1, img.width), board_h_px / max(1, img.height))
-    target_w = max(1, int(round(img.width * scale)))
-    target_h = max(1, int(round(img.height * scale)))
-    copper_resized = copper_layer.resize((target_w, target_h), resample=Image.LANCZOS)
-    composite_top = board_top.copy()
-    paste_x = (board_w_px - target_w) // 2
-    paste_y = (board_h_px - target_h) // 2
-    composite_top.paste(copper_resized, (paste_x, paste_y), copper_resized)
+            # map pixel bbox to viewBox units (usually mm when gerbonara produced SVG uses mm)
+            copper_left_mm = vb_minx + left_px * (vb_w / img.width)
+            copper_top_mm = vb_miny + upper_px * (vb_h / img.height)
+            copper_w_vb = copper_w_px * (vb_w / img.width)
+            copper_h_vb = copper_h_px * (vb_h / img.height)
+
+            # compute target size in board pixels so copper keeps its physical size
+            target_w_px = max(1, int(round(copper_w_vb * px_per_mm)))
+            target_h_px = max(1, int(round(copper_h_vb * px_per_mm)))
+            copper_resized = copper_crop.resize((target_w_px, target_h_px), resample=Image.LANCZOS)
+
+            # compute offset so copper top-left maps to the board origin offset
+            paste_x_local = int(round((copper_left_mm - board_origin_x) * px_per_mm))
+            paste_y_local = int(round((copper_top_mm - board_origin_y) * px_per_mm))
+        else:
+            # fallback: scale full copper layer to fit the board
+            scale = min(board_w_px / max(1, img.width), board_h_px / max(1, img.height))
+            target_w = max(1, int(round(img.width * scale)))
+            target_h = max(1, int(round(img.height * scale)))
+            copper_resized = copper_layer.resize((target_w, target_h), resample=Image.LANCZOS)
+            paste_x_local = (board_w_px - target_w) // 2
+            paste_y_local = (board_h_px - target_h) // 2
+
+        # ensure copper fits within board; if not, scale down proportionally
+        paste_x_local = max(0, paste_x_local)
+        paste_y_local = max(0, paste_y_local)
+        available_w = board_w_px - paste_x_local
+        available_h = board_h_px - paste_y_local
+        if copper_resized.width > available_w or copper_resized.height > available_h:
+            scale_w = available_w / copper_resized.width if copper_resized.width > 0 else 1.0
+            scale_h = available_h / copper_resized.height if copper_resized.height > 0 else 1.0
+            scale = min(scale_w, scale_h, 1.0)
+            if scale < 1.0:
+                new_w = max(1, int(round(copper_resized.width * scale)))
+                new_h = max(1, int(round(copper_resized.height * scale)))
+                copper_resized = copper_resized.resize((new_w, new_h), resample=Image.LANCZOS)
+
+        composite_top = board_top.copy()
+        composite_top.paste(copper_resized, (paste_x_local, paste_y_local), copper_resized)
 
     board_offset_y = int(board_h_px * 0.18)
     board_top_shrink = 0.75
@@ -708,8 +1082,7 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
     canvas_h_px = board_output_h + margin_px * 2
 
     composed = Image.new('RGBA', (canvas_w_px, canvas_h_px), (0, 0, 0, 0))
-    composed.paste(shadow_img, (margin_px, margin_px), shadow_img)
-    composed.paste(side_tilted, (margin_px, margin_px), side_tilted)
+    # paste only the board top (no side plane or shadow) so traces lie on the same plane
     composed.paste(board_top_tilted, (margin_px, margin_px), board_top_tilted)
 
     # add a light coating over the board for a soft conformal finish
@@ -718,20 +1091,52 @@ def render_3d_png_from_svg(svg_markup: str, out_path: pathlib.Path, fg_color: st
     coating = coating.filter(ImageFilter.GaussianBlur(radius=px_per_mm * 0.4))
     composed = Image.alpha_composite(composed, coating)
 
-    # build a final mask from the transformed board top and side alpha channels so
-    # the visible result is clipped to the board silhouette (this guarantees all
-    # four corners are rounded according to the original rounded_rectangle)
-    top_alpha = board_top_tilted.split()[3]
-    side_alpha = side_tilted.split()[3]
-    # combine top and side alphas (per-pixel max)
-    combined_alpha = ImageChops.lighter(top_alpha, side_alpha)
-    # place combined alpha into a full-canvas mask at the margin offset
-    full_mask = Image.new('L', (canvas_w_px, canvas_h_px), 0)
-    full_mask.paste(combined_alpha, (margin_px, margin_px))
+    # build a final mask from the transformed board top and side by transforming
+    # the original edge polygon (vector) through the same perspective mapping.
+    # This creates a precise silhouette mask that preserves rounded corners and
+    # avoids raster distortions from transforming an existing raster mask.
+    def map_perspective_point(coeffs, x, y):
+        # coeffs are (a,b,c,d,e,f,g,h)
+        a, b, c, d, e, f, g, h = coeffs
+        denom = (g * x + h * y + 1.0)
+        if denom == 0:
+            return (0.0, 0.0)
+        x_dst = (a * x + b * y + c) / denom
+        y_dst = (d * x + e * y + f) / denom
+        return (x_dst, y_dst)
 
-    # apply mask so only board-shaped pixels remain
+    vector_mask = Image.new('L', (canvas_w_px, canvas_h_px), 0)
+    vd = ImageDraw.Draw(vector_mask)
+
+    # transform board polygon (edge_points) through board_coeffs
+    if 'edge_points' in locals() and board_coeffs:
+        transformed_pts = []
+        for x_mm, y_mm in edge_points:
+            # convert mm to source px coordinates
+            x_src = (x_mm - board_origin_x) * px_per_mm
+            y_src = (y_mm - board_origin_y) * px_per_mm
+            x_t, y_t = map_perspective_point(board_coeffs, x_src, y_src)
+            # offset by margin_px for final canvas placement
+            transformed_pts.append((int(round(x_t + margin_px)), int(round(y_t + margin_px))))
+        if transformed_pts:
+            vd.polygon(transformed_pts, fill=255)
+
+    # transform side rectangle through side_coeffs and add to mask
+    if side_coeffs:
+        # source side rect corners
+        src_side = [(0, 0), (board_w_px, 0), (board_w_px, thickness_px), (0, thickness_px)]
+        transformed_side = []
+        for (x_src, y_src) in src_side:
+            x_t, y_t = map_perspective_point(side_coeffs, x_src, y_src)
+            transformed_side.append((int(round(x_t + margin_px)), int(round(y_t + margin_px))))
+        # nudge side mask slightly downward to avoid a visible seam with the top surface
+        offset_y = max(1, int(round(px_per_mm * 0.03)))
+        if offset_y:
+            transformed_side = [(x, y + offset_y) for (x, y) in transformed_side]
+        vd.polygon(transformed_side, fill=255)
+    # final mask is vector_mask
     final = Image.new('RGBA', (canvas_w_px, canvas_h_px), (0, 0, 0, 0))
-    final.paste(composed, (0, 0), full_mask)
+    final.paste(composed, (0, 0), vector_mask)
 
     final.save(out_path, format='PNG')
 
@@ -781,7 +1186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         preview_3d_src = None
         if getattr(args, 'render_3d', False):
             out3 = preview_path.with_name(preview_path.stem + '.3d.png')
-            render_3d_png_from_svg(rew_svg, out3, args.fg_color or '#b87333', args.tint_color or '#ff0000', args.pcb_width_mm, args.pcb_height_mm, args.corner_radius_mm)
+            render_3d_png_from_svg(rew_svg, out3, args.fg_color or '#b87333', args.tint_color or '#ff0000', args.pcb_width_mm, args.pcb_height_mm, args.corner_radius_mm, gerber_path=output_path)
             print(f"3D render written to '{out3}'")
             result['preview_3d_path'] = str(out3)
             preview_3d_src = out3.name
