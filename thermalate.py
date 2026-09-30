@@ -177,6 +177,11 @@ def build_thermal_aperture_definitions(gerber_file: GerberFile) -> Dict[int, Dic
         if original_number in mapping:
             continue
 
+        if isinstance(aperture, ApertureMacroInstance) and getattr(aperture.macro, 'name', '').upper().startswith('THM_'):
+            # Already a thermal-relief aperture from a previous rewrite; leave it alone so
+            # re-running the tool on already-rewritten output is a no-op rather than an error.
+            continue
+
         aper_func = normalize_aper_function(extract_aper_function(getattr(aperture, 'attrs', None)))
         if aper_func is None and isinstance(aperture, ApertureMacroInstance):
             aper_func = normalize_aper_function(extract_aper_function(aperture.attrs))
@@ -352,6 +357,7 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     parts.append('    .controls { text-align: center; padding: 8px; }')
     parts.append('    .compare-btn { display: inline-block; margin: 0 8px; padding: 8px 12px; background: #1976d2; color: white; border-radius: 6px; cursor: pointer; user-select: none; }')
     parts.append('    .three-d-canvas { width: 100%; height: 480px; display: block; touch-action: none; -webkit-user-select: none; user-select: none; cursor: grab; }')
+    parts.append('    .three-d-unavailable { padding: 16px; font-size: 0.85rem; color: #a33; background: #fff5f5; border: 1px dashed #e0b4b4; border-radius: 4px; }')
     parts.append('  </style>')
     # include three.js and SVGLoader + OrbitControls from CDN as ES modules
     parts.append('</head>')
@@ -429,7 +435,16 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
 
     parts.append('  <script>')
     parts.append('    (function(){')
-    parts.append('      const svgText = document.getElementById("svgData").textContent || document.getElementById("svgData").innerText;')
+    parts.append('      const canvas = document.getElementById("threeCanvas");')
+    parts.append('      function showUnavailable(message){')
+    parts.append('        canvas.style.display = "none";')
+    parts.append('        const msg = document.createElement("div");')
+    parts.append('        msg.className = "three-d-unavailable";')
+    parts.append('        msg.textContent = message;')
+    parts.append('        canvas.parentNode.insertBefore(msg, canvas);')
+    parts.append('      }')
+    parts.append('      try {')
+    parts.append('      const svgText = document.getElementById("svgData").innerHTML;')
     parts.append('      const parser = new DOMParser();')
     parts.append('      const doc = parser.parseFromString(svgText, "image/svg+xml");')
     parts.append('      const allPaths = Array.from(doc.querySelectorAll("path, rect, circle, ellipse, polygon, polyline"));')
@@ -446,7 +461,6 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     parts.append('      } catch (e) {')
     parts.append('        boardPath = doc.querySelector("path");')
     parts.append('      }')
-    parts.append('      const canvas = document.getElementById("threeCanvas");')
     parts.append('      const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });')
     parts.append('    renderer.setPixelRatio(window.devicePixelRatio || 1);')
     parts.append('      const scene = new THREE.Scene();')
@@ -515,6 +529,10 @@ def build_preview_html_v2(original_svg: str, rewritten_svg: str, orig_stats: dic
     parts.append('      window.addEventListener("resize", onWindowResize);')
     parts.append('      function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }')
     parts.append('      onWindowResize(); fitCamera(); animate();')
+    parts.append('      } catch (e) {')
+    parts.append('        console.error("3D preview unavailable:", e);')
+    parts.append('        showUnavailable("3D preview unavailable: your browser could not create a WebGL context (" + (e && e.message ? e.message : String(e)) + "). Try enabling hardware acceleration in your browser settings, or view this preview in a different browser.");')
+    parts.append('      }')
     parts.append('    })();')
     parts.append('  </script>')
 
